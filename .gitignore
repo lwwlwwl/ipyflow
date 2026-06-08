@@ -6,6 +6,7 @@
 **/.ipynb_checkpoints
 **/.jupyter_ystore.db
 **/.pretzel
+**/.claude
 *.bundle.*
 *.tsbuildinfo
 core/ipyflow/resources/labextension/
