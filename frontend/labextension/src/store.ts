@@ -1,7 +1,7 @@
 import { IComm, IShellFuture } from '@jupyterlab/services/lib/kernel/kernel';
 import { Notebook } from '@jupyterlab/notebook';
 import { ISessionContext } from '@jupyterlab/apputils';
-import { Cell, CodeCell, ICellModel } from '@jupyterlab/cells';
+import { Cell, CodeCell, ICellModel, ICodeCellModel } from '@jupyterlab/cells';
 import { KernelMessage } from '@jupyterlab/services';
 import { JSONValue } from '@lumino/coreutils';
 
@@ -93,11 +93,20 @@ export class IpyflowSessionState {
     for (const cell of cells) {
       // if any of them fail, change the [*] to [ ] on subsequent cells
       CodeCell.execute(cell as CodeCell, this.session).then(() => {
-        if (cell.promptNode.textContent?.includes('[*]')) {
-          // can happen if a preceding cell errored
-          cell.setPrompt('');
-        } else {
+        const execCount = (cell.model as ICodeCellModel).executionCount;
+        if (execCount != null) {
+          // Reconcile the input prompt with the real execution count. After a
+          // kernel restart (cells run while the comm is reconnecting are
+          // deferred and shown as [*]) the prompt can be left showing [*] even
+          // though the cell finished and the model already has a concrete
+          // count, so set it explicitly rather than relying on CodeCell having
+          // refreshed the DOM.
+          cell.setPrompt(`${execCount}`);
           this.executedCells.add(cell.model.id);
+        } else if (cell.promptNode.textContent?.includes('[*]')) {
+          // no execution count: the cell was aborted (e.g. a preceding cell
+          // errored), so clear the lingering [*].
+          cell.setPrompt('');
         }
         if (++numFinished === cells.length) {
           // wait a tick first to allow the disk changes to propagate up
