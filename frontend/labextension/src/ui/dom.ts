@@ -1,36 +1,40 @@
 import { Cell } from '@jupyterlab/cells';
 import { Notebook } from '@jupyterlab/notebook';
 
-import classes from './classes';
+import classes from '../classes';
 
 const cleanup = new Event('cleanup');
 
-export function getJpInputCollapser(elem: HTMLElement): Element | null {
+// Within a JupyterLab cell node the direct children are laid out as:
+//   [0] prompt / header, [1] input area, [2] output area.
+// The collapser button we want is the first element child of the input/output
+// area. These indices encode that (fragile) DOM assumption in one place.
+const INPUT_AREA_CHILD_INDEX = 1;
+const OUTPUT_AREA_CHILD_INDEX = 2;
+
+function getCollapser(elem: HTMLElement, childIndex: number): Element | null {
   if (elem === null || elem === undefined) {
     return null;
   }
-  const child = elem.children.item(1);
+  const child = elem.children.item(childIndex);
   if (child === null) {
     return null;
   }
   return child.firstElementChild;
 }
 
+export function getJpInputCollapser(elem: HTMLElement): Element | null {
+  return getCollapser(elem, INPUT_AREA_CHILD_INDEX);
+}
+
 export function getJpOutputCollapser(elem: HTMLElement): Element | null {
-  if (elem === null || elem === undefined) {
-    return null;
-  }
-  const child = elem.children.item(2);
-  if (child === null) {
-    return null;
-  }
-  return child.firstElementChild;
+  return getCollapser(elem, OUTPUT_AREA_CHILD_INDEX);
 }
 
 export function attachCleanupListener(
   elem: Element,
   evt: 'mouseover' | 'mouseout',
-  listener: any
+  listener: any,
 ): void {
   const cleanupListener = () => {
     elem.removeEventListener(evt, listener);
@@ -45,7 +49,7 @@ export function addWaitingOutputInteraction(
   linkedElem: Element,
   evt: 'mouseover' | 'mouseout',
   add_or_remove: 'add' | 'remove',
-  css: string
+  css: string,
 ): void {
   if (elem === null || linkedElem === null) {
     return;
@@ -58,21 +62,21 @@ export function addWaitingOutputInteraction(
 
 export function addWaitingOutputInteractions(
   elem: HTMLElement,
-  linkedInputClass: string
+  linkedInputClass: string,
 ): void {
   addWaitingOutputInteraction(
     getJpInputCollapser(elem),
     getJpOutputCollapser(elem),
     'mouseover',
     'add',
-    classes.linkedWaiting
+    classes.linkedWaiting,
   );
   addWaitingOutputInteraction(
     getJpInputCollapser(elem),
     getJpOutputCollapser(elem),
     'mouseout',
     'remove',
-    classes.linkedWaiting
+    classes.linkedWaiting,
   );
 
   addWaitingOutputInteraction(
@@ -80,14 +84,14 @@ export function addWaitingOutputInteractions(
     getJpInputCollapser(elem),
     'mouseover',
     'add',
-    linkedInputClass
+    linkedInputClass,
   );
   addWaitingOutputInteraction(
     getJpOutputCollapser(elem),
     getJpInputCollapser(elem),
     'mouseout',
     'remove',
-    linkedInputClass
+    linkedInputClass,
   );
 }
 
@@ -106,7 +110,7 @@ export function clearCellState(notebook: Notebook): void {
     if (inputCollapser !== null) {
       inputCollapser.firstElementChild.classList.remove(classes.linkedWaiting);
       inputCollapser.firstElementChild.classList.remove(
-        classes.linkedReadyMaker
+        classes.linkedReadyMaker,
       );
       inputCollapser.dispatchEvent(cleanup);
     }
@@ -115,7 +119,7 @@ export function clearCellState(notebook: Notebook): void {
     if (outputCollapser !== null) {
       outputCollapser.firstElementChild.classList.remove(classes.linkedWaiting);
       outputCollapser.firstElementChild.classList.remove(
-        classes.linkedReadyMaker
+        classes.linkedReadyMaker,
       );
       outputCollapser.dispatchEvent(cleanup);
     }
@@ -129,7 +133,7 @@ export function addUnsafeCellInteraction(
   collapserFun: (elem: HTMLElement) => Element,
   evt: 'mouseover' | 'mouseout',
   add_or_remove: 'add' | 'remove',
-  waitingCells: Set<string>
+  waitingCells: Set<string>,
 ): void {
   if (elem === null) {
     return;
