@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-.PHONY: clean black blackcheck eslint imports build deploy_only deploy check check_no_typing test tests deps devdeps dev typecheck version bump extlink kernel
+.PHONY: clean black blackcheck eslint imports build deploy_only deploy check check_no_typing test tests deps devdeps dev typecheck version bump extlink kernel uitest e2e
 
 # Prefer uv if available, otherwise fall back to pip. Override with `make <t> PIP=...`.
 ifeq ($(shell command -v uv 2>/dev/null),)
@@ -83,3 +83,11 @@ kernel:
 	python -m ipyflow.install --sys-prefix
 
 dev: devdeps build extlink kernel
+
+# Galata/Playwright UI end-to-end tests (launches JupyterLab in a browser).
+uitest:
+	./scripts/runtests.sh ui
+
+# Headless kernel comm-protocol end-to-end test (starts a real ipyflow kernel).
+e2e:
+	cd core && IPYFLOW_KERNEL_E2E=1 python -m pytest test/test_kernel_comm_e2e.py -v
