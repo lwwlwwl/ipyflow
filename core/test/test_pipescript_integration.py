@@ -15,6 +15,7 @@ from test.utils import make_flow_fixture
 
 import pytest
 
+from ipyflow.data_model.cell import Cell
 from ipyflow.singletons import shell
 
 # pipescript is an optional test dependency and requires Python >= 3.9.
@@ -243,3 +244,91 @@ def test_quick_lambda():
 def test_quick_lambda_named_placeholders():
     run_cell("result = f[$a*$b + $b*$c + $a*$c](2, 3, 4)")
     assert result() == 26
+
+
+# ---------------------------------------------------------------------------
+# Placeholder liveness
+#
+# pipescript rewrites its ``$`` / ``$$`` placeholders to ``_`` (and ``$foo`` to
+# ``_foo``) in the cell source. These synthetic names must not be picked up by
+# ipyflow's liveness analyzer as references to the IPython ``_`` (last-expr)
+# symbol, or every placeholder cell would spuriously depend on whatever the
+# previous cell evaluated to. We assert liveness statically (no execution, so
+# the dataflow tracer's synthetic lambda line numbers are not involved).
+# ---------------------------------------------------------------------------
+
+
+def _live_ref_strs(code):
+    cell = Cell.create_and_track(object(), code, (), bump_cell_counter=False)
+    live, *_ = cell._get_live_dead_modified_symbol_refs(False)
+    return {str(ref.ref) for ref in live}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "reverse_sorter = sorted($, reverse=True)",
+        "sorter = sorted($, reverse=$)",
+        "result = lst |> sorted($, reverse=True)",
+        "result = lst |> $.index(3)",
+        "result = data |> np.max($, initial=1.0)",
+        "result = 42 |> $ + 1",
+        "result = f[$ + $](2, 3)",
+        "result = f[$a*$b](2, 3)",
+    ],
+)
+def test_placeholder_not_live(code):
+    # ``_`` (and named placeholders like ``_a``) should never appear as live.
+    assert not any(
+        ref == "('_',)" or ref.startswith("('_'") or ref.startswith("('_a'")
+        for ref in _live_ref_strs(code)
+    ), _live_ref_strs(code)
+
+
+def test_real_refs_preserved_alongside_placeholders():
+    # the placeholder is dropped, but genuine references in the same cell remain.
+    live = _live_ref_strs("result = lst |> sorted($, key=mykey)")
+    assert "('lst',)" in live
+    assert "('mykey',)" in live
+    assert "('_',)" not in live
+
+
+def test_placeholder_not_live_after_marks_discarded():
+    # pipescript discards a node's pyccolo augmentation marks once it rewrites
+    # the placeholder during execution. ipyflow latches the placeholder status
+    # when it first builds the cell AST, so the ``_`` must stay excluded from
+    # liveness even after the marks are gone -- otherwise the spurious dependency
+    # on the previous cell's ``_`` reappears on subsequent frontend re-checks.
+    import pyccolo as pyc
+
+    cell = Cell.create_and_track(
+        object(),
+        "reverse_sorter = sorted($, reverse=True)",
+        (),
+        bump_cell_counter=False,
+    )
+    live_before, *_ = cell._get_live_dead_modified_symbol_refs(False)
+    assert not any(str(r.ref).startswith("('_'") for r in live_before)
+    # simulate pipescript clearing the augmentation marks post-rewrite
+    for ids in pyc.BaseTracer.augmented_node_ids_by_spec.values():
+        ids.clear()
+    live_after, *_ = cell._get_live_dead_modified_symbol_refs(False)
+    assert not any(str(r.ref).startswith("('_'") for r in live_after), {
+        str(r.ref) for r in live_after
+    }
+
+
+def test_placeholder_not_live_after_intervening_executions():
+    # the "takes a few executions" scenario: executing other placeholder cells
+    # churns pyccolo's process-wide augmentation bookkeeping, but a freshly
+    # built placeholder cell must still exclude ``_`` from liveness.
+    run_cell("result = f[$ + $](2, 3)")
+    run_cell("x = 5")
+    run_cell("result = f[$a*$b + $b*$c + $a*$c](2, 3, 4)")
+    cell = Cell.create_and_track(
+        object(), "result = 42 |> $ + 1", (), bump_cell_counter=False
+    )
+    live, *_ = cell._get_live_dead_modified_symbol_refs(False)
+    assert not any(str(r.ref).startswith("('_'") for r in live), {
+        str(r.ref) for r in live
+    }

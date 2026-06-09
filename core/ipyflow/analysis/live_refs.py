@@ -17,6 +17,8 @@ from typing import (
     cast,
 )
 
+import pyccolo as pyc
+
 from ipyflow.analysis.mixins import (
     SaveOffAttributesMixin,
     SkipUnboundArgsMixin,
@@ -48,6 +50,104 @@ def _chain_root(node: ast.AST):
         else:
             break
     return node
+
+
+# Durable attribute latched onto AST ``Name`` nodes that are syntax-augmentation
+# placeholders (e.g. pipescript's ``$`` / ``$$``, rewritten to ``_``).
+#
+# We deliberately do NOT rely on pyccolo's ``augmented_node_ids_by_spec`` at
+# liveness/resolution time: that mapping is keyed by *copied* node ids, is shared
+# process-wide, is garbage-collected as cells churn, and is clobbered by the
+# repeated parse-only rewrites ipyflow does for liveness -- so reading it later is
+# unreliable (this is what made the spurious ``_`` dependency appear only "after a
+# few executions"). Instead we derive placeholder identity from the rewriter's own
+# per-instance augmented *source positions* the moment the cell AST is built, and
+# latch the result durably on the node.
+_PLACEHOLDER_ATTR = "_ipyflow_is_augmented_placeholder"
+
+
+def _is_placeholder_spec(spec: "pyc.AugmentationSpec") -> bool:
+    """
+    True for pipescript's ``$`` / ``$$`` placeholder augmentations specifically:
+    tokens made of ``$`` whose replacement is the lone underscore ``_``. We scope
+    the placeholder handling to exactly this signature (rather than any
+    identifier-valued augmentation) so unrelated augmentations are unaffected.
+    """
+    return spec.replacement == "_" and bool(spec.token) and spec.token in ("$", "$$")
+
+
+def _node_has_live_placeholder_augmentation(node: ast.AST) -> bool:
+    augmented = pyc.BaseTracer.augmented_node_ids_by_spec
+    if not augmented:
+        return False
+    node_id = id(node)
+    return any(
+        node_id in node_ids
+        for spec, node_ids in augmented.items()
+        if _is_placeholder_spec(spec)
+    )
+
+
+def mark_placeholder_nodes(
+    tree: ast.AST, rewriter: Optional["pyc.AstRewriter"] = None
+) -> None:
+    """
+    Latch the placeholder status of every pipescript ``$`` / ``$$`` placeholder
+    ``Name`` node in ``tree``. Called right after ipyflow builds a cell's AST,
+    passing the ``rewriter`` whose augmenters just produced ``tree``'s source.
+
+    Placeholders are located by source position: the rewriter records where each
+    augmentation token was substituted, and ``fix_positions`` maps those to final
+    parsed-AST coordinates. We mark ``Name`` nodes at the positions of the
+    ``$`` / ``$$`` -> ``_`` placeholder specs only (see ``_is_placeholder_spec``).
+    Idempotent.
+    """
+    if rewriter is None:
+        return
+    positions_by_spec = getattr(rewriter, "_augmented_positions_by_spec", None)
+    if not positions_by_spec:
+        return
+    from pyccolo.syntax_augmentation import Position, fix_positions
+
+    fixed = fix_positions(positions_by_spec, rewriter._get_order_of_specs_applied())
+    placeholder_positions: Set[Position] = set()
+    for spec, positions in fixed.items():
+        if _is_placeholder_spec(spec):
+            placeholder_positions.update(positions)
+    if not placeholder_positions:
+        return
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and Position(node.lineno, node.col_offset) in placeholder_positions
+        ):
+            setattr(node, _PLACEHOLDER_ATTR, True)
+
+
+def root_is_augmented_placeholder(node: ast.AST) -> bool:
+    """
+    True when the chain rooted at ``node`` begins with a ``Name`` produced by a
+    pipescript ``$`` / ``$$`` placeholder augmentation (rewritten to ``_``, or
+    ``_foo`` for ``$foo``) in the cell source. These synthetic names stand in for
+    lambda arguments; they are not references to the IPython ``_`` (last-
+    expression) symbol, so they must be excluded from liveness rather than
+    resolved against the user namespace.
+
+    Consults the durable latch set by :func:`mark_placeholder_nodes` first, then
+    falls back to pyccolo's live placeholder-augmentation marks -- which covers
+    the executed (copied) AST nodes seen by the dynamic symbol resolver, since
+    those never pass through ipyflow's ``to_ast`` marking -- latching any positive
+    result.
+    """
+    root = _chain_root(node)
+    if not isinstance(root, ast.Name):
+        return False
+    if getattr(root, _PLACEHOLDER_ATTR, False):
+        return True
+    if _node_has_live_placeholder_augmentation(root):
+        setattr(root, _PLACEHOLDER_ATTR, True)
+        return True
+    return False
 
 
 # TODO: have the logger warnings additionally raise exceptions for tests
@@ -279,6 +379,9 @@ class ComputeLiveSymbolRefs(
                 self.visit(node.optional_vars)
 
     def visit_Name(self, node: ast.Name) -> None:
+        if root_is_augmented_placeholder(node):
+            # synthetic placeholder (e.g. pipescript ``$`` rewritten to ``_``)
+            return
         ref = SymbolRef(node, scope=self._scope)
         if self._in_kill_context:
             self.dead.add(ref.canonical())
@@ -347,7 +450,11 @@ class ComputeLiveSymbolRefs(
             self.generic_visit(node.args)
             for kwarg in node.keywords:
                 self.visit(kwarg.value)
-        if not self._inside_attrsub and not isinstance(_chain_root(node), ast.BinOp):
+        if (
+            not self._inside_attrsub
+            and not isinstance(_chain_root(node), ast.BinOp)
+            and not root_is_augmented_placeholder(node)
+        ):
             self._add_attrsub_to_live_if_eligible(SymbolRef(node))
         with self.attrsub_context():
             self.visit(node.func)
@@ -382,7 +489,11 @@ class ComputeLiveSymbolRefs(
             self._visiting_func_calls.discard(node.func.id)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if not self._inside_attrsub and not isinstance(_chain_root(node), ast.BinOp):
+        if (
+            not self._inside_attrsub
+            and not isinstance(_chain_root(node), ast.BinOp)
+            and not root_is_augmented_placeholder(node)
+        ):
             self._add_attrsub_to_live_if_eligible(SymbolRef(node))
         with self.attrsub_context():
             self.visit(node.value)
@@ -405,7 +516,11 @@ class ComputeLiveSymbolRefs(
         ):
             # skip quasiquoted values
             return
-        if not self._inside_attrsub and not isinstance(_chain_root(node), ast.BinOp):
+        if (
+            not self._inside_attrsub
+            and not isinstance(_chain_root(node), ast.BinOp)
+            and not root_is_augmented_placeholder(node)
+        ):
             self._add_attrsub_to_live_if_eligible(SymbolRef(node))
         with self.attrsub_context():
             self.visit(node.value)

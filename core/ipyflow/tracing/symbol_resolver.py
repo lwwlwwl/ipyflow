@@ -4,7 +4,10 @@ import logging
 from contextlib import contextmanager
 from typing import Iterable, List, Optional, Set, Union
 
-from ipyflow.analysis.live_refs import static_resolve_rvals
+from ipyflow.analysis.live_refs import (
+    root_is_augmented_placeholder,
+    static_resolve_rvals,
+)
 from ipyflow.analysis.mixins import (
     SaveOffAttributesMixin,
     SkipUnboundArgsMixin,
@@ -75,6 +78,12 @@ class ResolveRvalSymbols(
                 self.symbols.extend(symbols)
 
     def visit_Name(self, node: ast.Name):
+        if root_is_augmented_placeholder(node):
+            # synthetic placeholder (e.g. pipescript ``$`` rewritten to ``_``);
+            # not a reference to the IPython ``_`` (last-expr) symbol. Normally
+            # pipescript mutates the node to a lambda arg (``_0``) before we get
+            # here, but guard in case an unrewritten placeholder slips through.
+            return
         resolved = tracer().resolve_loaded_symbols(node)
         self._add_to_resolved(resolved, node)
 

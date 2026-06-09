@@ -32,6 +32,7 @@ from ipyflow.analysis.live_refs import (
     compute_live_dead_symbol_refs,
     get_live_symbols_and_cells_for_references,
     get_symbols_for_references,
+    mark_placeholder_nodes,
 )
 from ipyflow.analysis.resolved_symbols import ResolvedSymbol
 from ipyflow.config import ExecutionSchedule, FlowDirection, Interface
@@ -675,6 +676,11 @@ class Cell(SliceableMixin):
             if rewriter is not None:
                 with self.override_current_cell():
                     rewriter.visit(self._cached_ast)
+            # durably latch syntax-augmentation placeholders (e.g. pipescript
+            # ``$`` -> ``_``) from the rewriter's per-cell augmented source
+            # positions, so liveness and symbol resolution don't later mistake
+            # them for the IPython ``_`` (last-expression) symbol.
+            mark_placeholder_nodes(self._cached_ast, rewriter)
         return self._cached_ast
 
     @property
