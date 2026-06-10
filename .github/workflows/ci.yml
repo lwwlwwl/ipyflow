@@ -70,6 +70,13 @@ jobs:
     # End-to-end tests: builds the labextension, installs the ipyflow kernel,
     # then runs the headless kernel comm test and the Galata (Playwright) UI
     # tests against a real JupyterLab. Separate from the Python matrix above.
+    #
+    # Opt-in / on-demand only (these are slow and browser-based): runs when the
+    # workflow is manually dispatched, or on a pull request labeled
+    # 'run-ui-tests'. Skipped on ordinary pushes/PRs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-ui-tests')
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
