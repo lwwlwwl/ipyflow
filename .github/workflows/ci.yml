@@ -99,10 +99,15 @@ jobs:
         pip install -e ./core/.[dev] jupyterlab
     - name: Build labextension, link it, and install the kernel
       run: |
-        (cd frontend/labextension && npm install)
-        # npm can exit 0 even when the prepare/build step crashes (e.g. the
-        # "Exit handler never called!" bug), so verify the build output exists
-        # before continuing instead of failing much later at the sanity grep.
+        # Install deps and build as two separate top-level commands rather than
+        # letting the package's `prepare` script build during `npm install`.
+        # Building inside the install spawns nested `npm run` processes, which
+        # trips npm's "Exit handler never called!" crash on the CI runner and
+        # leaves the labextension unbuilt. `--ignore-scripts` keeps install from
+        # running prepare; the build is then a visible step with its own exit code.
+        (cd frontend/labextension && npm ci --ignore-scripts && npm run build)
+        # Verify the build output exists before continuing instead of failing
+        # much later (and opaquely) at the sanity grep below.
         test -f core/ipyflow/resources/labextension/package.json
         ls core/ipyflow/resources/labextension/static/remoteEntry.*.js
         cp frontend/labextension/install.json core/ipyflow/resources/labextension
