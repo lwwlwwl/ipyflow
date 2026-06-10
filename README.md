@@ -82,16 +82,14 @@ IPyflow ships with extensions that bring optional reactivity to JupyterLab and
 Notebook 7, similar to execution behavior offered in other notebooks such as
 [Observable](https://observablehq.com/),
 [Pluto.jl](https://github.com/fonsp/Pluto.jl), and
-[Marimo](https://github.com/marimo-team/marimo). Reactive execution is opt-in;
-by default, IPyflow uses normal (non-reactive) execution and only executes the
-cell you run, while still tracking dependencies in the background.
-
+[Marimo](https://github.com/marimo-team/marimo).
 IPyflow's reactivity behaves a little bit differently from the above, however,
 as it was designed to meet the needs of Jupyter users in particular. Once
-reactive execution is enabled (see below), executing cell `C` with IPyflow
-causes `C`'s output, the output of the cells `C` depends on, and the output of
-the cells that depend on `C` to all appear as they would if the notebook were
-executed from top to bottom (e.g. via "restart and run-all").
+reactive execution is enabled (see below -- reactivity is opt-in), executing
+cell `C` with IPyflow causes `C`'s output, the output of the cells `C` depends
+on, and the output of the cells that depend on `C` to all appear as they would
+if the notebook were executed from top to bottom (e.g. via "restart and
+run-all").
 
 Regardless of whether reactive execution is enabled, IPyflow's JupyterLab
 extension color-codes cell dependencies: when you select some cell `C`, all the
