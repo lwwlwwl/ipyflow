@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-.PHONY: clean black blackcheck eslint imports build deploy_only deploy check check_no_typing test tests deps devdeps dev typecheck version bump extlink kernel uitest e2e
+.PHONY: clean black blackcheck eslint imports build deploy_only deploy check check_no_typing test tests deps devdeps dev typecheck version bump extlink kernel uitest uitest-report e2e
 
 # Prefer uv if available, otherwise fall back to pip. Override with `make <t> PIP=...`.
 ifeq ($(shell command -v uv 2>/dev/null),)
@@ -87,6 +87,10 @@ dev: devdeps build extlink kernel
 # Galata/Playwright UI end-to-end tests (launches JupyterLab in a browser).
 uitest:
 	./scripts/runtests.sh ui
+
+# Open the HTML report from the last `make uitest` run (served on localhost).
+uitest-report:
+	cd frontend/labextension/ui-tests && npm run test:report
 
 # Headless kernel comm-protocol end-to-end test (starts a real ipyflow kernel).
 e2e:
