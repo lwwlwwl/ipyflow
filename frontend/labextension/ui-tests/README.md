@@ -38,6 +38,7 @@ jlpm test:debug                 # Playwright inspector
 jlpm test:report                # open the last HTML report
 ```
 
-Playwright launches its own JupyterLab via `jupyter_server_test_config.py`; no
-manually running server is required (set `reuseExistingServer` is enabled outside
-CI if one is already on :8888).
+Playwright launches its own JupyterLab via `jupyter_server_test_config.py` on a
+dedicated port (**8899** by default, override with `IPYFLOW_UITEST_PORT`) so it
+never collides with a JupyterLab you already have running on :8888. No manually
+running server is required.
