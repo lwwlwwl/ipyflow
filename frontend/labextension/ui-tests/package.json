@@ -14,5 +14,9 @@
   "devDependencies": {
     "@jupyterlab/galata": "^5.5.7",
     "@playwright/test": "^1.57.0"
+  },
+  "overridesComment": "Dedupe the transitive vega-lite copy of vega-expression up to 5.2.1, which patches the VEGA_DEBUG toString XSS (GHSA / dependabot #170). Stays within the vega 5.x line that @jupyterlab/galata requires.",
+  "overrides": {
+    "vega-expression": "^5.2.1"
   }
 }
