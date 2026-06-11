@@ -74,6 +74,53 @@ test.describe('ipyflow notebook operations', () => {
     await settleAutosave(page);
   });
 
+  test('editing a cell to drop a dependency breaks the chain, and re-adding it re-establishes the chain', async ({
+    page
+  }) => {
+    // y depends on x. Run in place (Control+Enter) so the last-cell run does not
+    // advance + insert a trailing cell.
+    await openIpyflowNotebook(page, ['x = 1', 'y = x + 1']);
+    await page.notebook.runCell(0, true);
+    await page.notebook.runCell(1, true);
+    await waitForEdge(page, 0, 1);
+
+    // Edit y so it no longer references x, then re-run: the x -> y edge is
+    // dropped, and re-running x no longer flags y as ready.
+    await setCellSource(page, 1, 'y = 100');
+    expect(await cellSource(page, 1)).toBe('y = 100');
+    await page.notebook.runCell(1, true);
+    await waitForEdge(page, 0, 1, false);
+
+    await setCellSource(page, 0, 'x = 5');
+    expect(await cellSource(page, 0)).toBe('x = 5');
+    await page.notebook.runCell(0, true);
+    // Give a schedule a chance to (incorrectly) flag y before asserting it
+    // stayed put: the edge is gone, so y is independent of x now.
+    await page.waitForTimeout(2000);
+    const yId = await cellModelId(page, 1);
+    expect(await readyAndWaitingCells(page)).not.toContain(yId);
+    expect(await cellChildrenIncludes(page, 0, 1)).toBe(false);
+
+    // Re-edit y to reference x again and re-run: the x -> y edge re-forms, and
+    // re-running x once more flags the re-linked y as ready.
+    await setCellSource(page, 1, 'y = x + 1');
+    expect(await cellSource(page, 1)).toBe('y = x + 1');
+    await page.notebook.runCell(1, true);
+    await waitForEdge(page, 0, 1);
+
+    await setCellSource(page, 0, 'x = 9');
+    expect(await cellSource(page, 0)).toBe('x = 9');
+    await page.notebook.runCell(0, true);
+    await expect
+      .poll(() => readyAndWaitingCells(page), {
+        timeout: 30_000,
+        message: 're-linked dependent y was not flagged ready after re-adding x'
+      })
+      .toContain(yId);
+
+    await settleAutosave(page);
+  });
+
   test('two ipyflow notebooks keep independent dependency graphs', async ({
     page
   }) => {

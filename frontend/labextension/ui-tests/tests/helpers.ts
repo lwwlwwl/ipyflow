@@ -213,6 +213,47 @@ export async function waitForCellClass(
 }
 
 /**
+ * The CSS class list of the minimap item that mirrors the cell at `index` in the
+ * foreground notebook. ipyflow's windowed-scrollbar "minimap" is the
+ * `li.jp-WindowedPanel-scrollbar-item` list, one item per cell in order; the
+ * decorations code (ui/decorations.ts) tags those items with the same
+ * `ipyflow-slice` / `ipyflow-slice-execute` classes as the cells to color-code
+ * the slice. Reads off `window.ipyflow.notebook`, so it always reflects the
+ * active tab's own notebook.
+ */
+export const minimapClassList = (
+  page: any,
+  index: number
+): Promise<string[]> =>
+  page.evaluate((i: number) => {
+    const node = (window as any).ipyflow?.notebook?.node;
+    if (!node) {
+      return [];
+    }
+    const items = node.querySelectorAll(
+      'div.jp-WindowedPanel-scrollbar > ol > li.jp-WindowedPanel-scrollbar-item'
+    );
+    return Array.from(items[i]?.classList ?? []) as string[];
+  }, index);
+
+/** Poll until the minimap item at `index` carries (or drops) a class. */
+export async function waitForMinimapClass(
+  page: any,
+  index: number,
+  className: string,
+  present = true
+): Promise<void> {
+  await expect
+    .poll(async () => (await minimapClassList(page, index)).includes(className), {
+      timeout: 30_000,
+      message: `minimap item ${index} never ${
+        present ? 'gained' : 'lost'
+      } class ${className}`
+    })
+    .toBe(present);
+}
+
+/**
  * Whether ipyflow's dependency graph records cell `parentIndex` as a parent of
  * cell `childIndex` (i.e. the edge parent → child is known to the frontend).
  */
@@ -231,18 +272,24 @@ export const cellChildrenIncludes = (
     { p: parentIndex, c: childIndex }
   );
 
-/** Poll until the parent → child edge is present in the dependency graph. */
+/**
+ * Poll until the parent → child edge is present in the dependency graph (or,
+ * when `present` is false, until it has been dropped).
+ */
 export async function waitForEdge(
   page: any,
   parentIndex: number,
-  childIndex: number
+  childIndex: number,
+  present = true
 ): Promise<void> {
   await expect
     .poll(() => cellChildrenIncludes(page, parentIndex, childIndex), {
       timeout: 30_000,
-      message: `dependency edge cell${parentIndex} -> cell${childIndex} never formed`
+      message: `dependency edge cell${parentIndex} -> cell${childIndex} never ${
+        present ? 'formed' : 'dropped'
+      }`
     })
-    .toBe(true);
+    .toBe(present);
 }
 
 /** The store's current ipyflow exec mode ('lazy' | 'reactive' | undefined). */
