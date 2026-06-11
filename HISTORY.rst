@@ -1,6 +1,20 @@
 History
 =======
 
+0.0.228 (2026-06-10)
+--------------------
+* [lab] refactor, modularize, and upgrade the JupyterLab extension;
+* [kernel][lab] go back to lazy execution by default;
+* [kernel] tolerate unknown run_cell kwargs from newer ipykernel (e.g. cell_meta);
+* [kernel] fix crash iterating zip/enumerate over computed iterables (#166);
+* [kernel] fix mutated-collection-during-iteration bug;
+* [kernel] bugfix for Python 3.14 context manager cleanup;
+* [kernel] use IPython magic parser and refactor line magics;
+* [kernel] skip symbol resolution / liveness on pipescript placeholders;
+* [lab] guard debounced notebook autosave against closed/disposed notebooks;
+* [lab] rerender prompt with counter after restart even before ipyflow connection is established;
+* [lab] misc extension bugfixes;
+
 0.0.227 (2026-01-15)
 --------------------
 * [kernel] bump pyccolo with syntax augmentation optimization;
