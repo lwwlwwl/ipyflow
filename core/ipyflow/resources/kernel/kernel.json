@@ -1,16 +1,17 @@
 {
  "argv": [
-  "python",
+  "/home/ylu217/Desktop/reactive_notebook/notebook/venv/bin/python",
   "-m",
   "ipyflow.kernel",
   "-f",
   "{connection_file}"
  ],
- "codemirror_mode": "shell",
- "display_name": "Python 3 (ipyflow)",
+ "display_name": "Python 3 (rnb)",
  "language": "python",
  "metadata": {
   "debugger": true
+ },
+ "env": {
+  "LD_PRELOAD": "/home/ylu217/Desktop/reactive_notebook/reactive_nb/submodules/notebook/src/c_tracker.so"
  }
 }
-
