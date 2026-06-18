@@ -512,15 +512,7 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
         is_already_recording_output = raw_cell.strip().startswith("%%capture")
         self._should_capture_output = should_trace and not is_already_recording_output
         _mem_exec_id = self.cell_counter()
-        _tracking_started = False
-        _tracking_stopped = False
-        if not _is_import_only_cell(raw_cell):
-            try:
-                from core.profiler import start_tracking
-                start_tracking(_mem_exec_id, raw_cell)
-                _tracking_started = True
-            except Exception:
-                pass
+        _should_track = not _is_import_only_cell(raw_cell)
         try:
             with (
                 self._tracing_context(
@@ -540,15 +532,23 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                     kwargs["transformed_cell"] = transformed_cell
                 # discard any previous transformations that were done
                 cell = Cell.current_cell()
-                ret = await super().run_cell_async(
-                    cell.raw_cell if has_transformed_cell else transformed_cell,
-                    store_history=store_history,
-                    silent=False,
-                    shell_futures=shell_futures,
-                    **self._filter_super_kwargs(
-                        self._super_run_cell_async_param_names, kwargs
-                    ),
-                )  # pragma: no cover
+                _track_ctx = suppress()
+                if _should_track:
+                    try:
+                        from core.profiler import track_memory
+                        _track_ctx = track_memory(_mem_exec_id, raw_cell)
+                    except Exception:
+                        pass
+                with _track_ctx:
+                    ret = await super().run_cell_async(
+                        cell.raw_cell if has_transformed_cell else transformed_cell,
+                        store_history=store_history,
+                        silent=False,
+                        shell_futures=shell_futures,
+                        **self._filter_super_kwargs(
+                            self._super_run_cell_async_param_names, kwargs
+                        ),
+                    )  # pragma: no cover
                 cell.error_in_exec = ret.error_in_exec
                 if is_already_recording_output:
                     outvar = (
@@ -558,12 +558,9 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                     singletons.flow().global_scope.upsert_symbol_for_name(
                         outvar, get_ipython().user_ns.get(outvar)
                     )
-            if _tracking_started:
+            if _should_track:
                 try:
-                    from core.profiler import stop_tracking
                     from core.graph_adapter import register_memory_deps
-                    stop_tracking(_mem_exec_id)
-                    _tracking_stopped = True
                     register_memory_deps(_mem_exec_id)
                 except Exception:
                     pass
@@ -579,13 +576,6 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
             self.on_exception(e)
         else:
             self.on_exception(None)
-        finally:
-            if _tracking_started and not _tracking_stopped:
-                try:
-                    from core.profiler import stop_tracking
-                    stop_tracking(_mem_exec_id)
-                except Exception:
-                    pass
         return ret
 
     def after_init_class(self) -> None:
