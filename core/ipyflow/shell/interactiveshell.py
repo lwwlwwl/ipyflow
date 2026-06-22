@@ -541,7 +541,7 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                 _track_ctx = suppress()
                 if _should_track:
                     try:
-                        from core.profiler import track_memory
+                        from memtrace.profiler import track_memory
                         _track_ctx = track_memory(_mem_exec_id, raw_cell)
                     except Exception:
                         pass
@@ -566,14 +566,14 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                     )
             if _should_track:
                 try:
-                    from core.graph_adapter import register_memory_deps
+                    from kernels.rnb.graph_adapter import register_memory_deps
                     register_memory_deps(_mem_exec_id)
                 except Exception as e:
                     if settings.is_dev_mode:
                         logger.exception("exception occurred")
                     self.on_exception(e)
             try:
-                from core.graph_adapter import update_transitive_dag_edges
+                from kernels.rnb.graph_adapter import update_transitive_dag_edges
                 update_transitive_dag_edges(_mem_exec_id)
             except Exception as e:
                 if settings.is_dev_mode:
