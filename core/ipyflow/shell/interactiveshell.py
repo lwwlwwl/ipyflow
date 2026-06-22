@@ -568,13 +568,17 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                 try:
                     from core.graph_adapter import register_memory_deps
                     register_memory_deps(_mem_exec_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    if settings.is_dev_mode:
+                        logger.exception("exception occurred")
+                    self.on_exception(e)
             try:
                 from core.graph_adapter import update_transitive_dag_edges
                 update_transitive_dag_edges(_mem_exec_id)
-            except Exception:
-                pass
+            except Exception as e:
+                if settings.is_dev_mode:
+                    logger.exception("exception occurred")
+                self.on_exception(e)
             # Stage 3:  Run post-execute hook
             if should_trace:
                 self.after_run_cell(raw_cell)
