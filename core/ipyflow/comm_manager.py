@@ -2,6 +2,7 @@
 import ast
 import logging
 import textwrap
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
 
 import pyccolo as pyc
@@ -22,6 +23,58 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_DEP_LOG_PATH = "/tmp/rnb_deps.log"
+
+def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
+    cells_to_rerun = checker_result.new_ready_cells | checker_result.forced_reactive_cells
+    if not cells_to_rerun:
+        return
+    try:
+        from ipyflow.data_model.cell import cells as _cells
+
+        def label(cell_id: Any) -> str:
+            c = _cells().from_id_nullable(cell_id)
+            if c is None:
+                return f"[?:{cell_id}]"
+            snip = (c.executed_content or c.current_content or "").strip().splitlines()[0][:40]
+            return f"[pos={c.position}: {snip!r}]"
+
+        lines = [
+            f"\n{'='*60}",
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] REACTIVE RERUN triggered by {label(last_cell_id)}",
+            f"  Cells to rerun ({len(cells_to_rerun)}):",
+            f"    new_ready:        {[label(c) for c in sorted(checker_result.new_ready_cells)]}",
+            f"    forced_reactive:  {[label(c) for c in sorted(checker_result.forced_reactive_cells)]}",
+        ]
+        for cell_id in sorted(cells_to_rerun):
+            cell = _cells().from_id_nullable(cell_id)
+            if cell is None:
+                lines.append(f"  {label(cell_id)}  <not found>")
+                continue
+            stale_pars = checker_result.stale_parents.get(cell_id, set())
+            all_pars = checker_result.cell_parents.get(cell_id, set())
+            lines.append(f"  {label(cell_id)}")
+            lines.append(f"    cell_parents:  {[label(p) for p in sorted(all_pars)]}")
+            lines.append(f"    stale_parents: {[label(p) for p in sorted(stale_pars)]}")
+        lines.append("  Full cell_parents graph:")
+        all_ids = set(checker_result.cell_parents) | {
+            pid for pids in checker_result.cell_parents.values() for pid in pids
+        }
+        for cid in sorted(all_ids, key=lambda c: getattr(_cells().from_id_nullable(c), "position", 999)):
+            pids = checker_result.cell_parents.get(cid, set())
+            marker = " <-- RERUN" if cid in cells_to_rerun else ""
+            lines.append(f"    {label(cid)}{marker}")
+            for pid in sorted(pids, key=lambda c: getattr(_cells().from_id_nullable(c), "position", 999)):
+                lines.append(f"      <- {label(pid)}")
+        with open(_DEP_LOG_PATH, "a") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        try:
+            with open(_DEP_LOG_PATH, "a") as f:
+                f.write(f"[rnb dep log error] {exc}\n")
+        except Exception:
+            pass
 
 
 class CommManager:
@@ -179,7 +232,7 @@ class CommManager:
             if cell is not None
         )
         exec_schedule = self.flow.mut_settings.exec_schedule
-        response = self.flow.check_and_link_multiple_cells(
+        checker_result = self.flow.check_and_link_multiple_cells(
             cells_to_check=cells_to_check,
             last_executed_cell_id=last_cell_id,
             allow_new_ready=request.get(
@@ -191,7 +244,9 @@ class CommManager:
                     ExecutionSchedule.HYBRID_DAG_LIVENESS_BASED,
                 ),
             ),
-        ).to_json()
+        )
+        _log_reactive_deps(checker_result, last_cell_id)
+        response = checker_result.to_json()
         response["type"] = "compute_exec_schedule"
         response["exec_mode"] = self.flow.mut_settings.exec_mode.value
         response["exec_schedule"] = exec_schedule.value
