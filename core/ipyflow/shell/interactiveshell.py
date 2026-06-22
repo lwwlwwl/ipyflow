@@ -57,13 +57,19 @@ _CAPTURE_OUTPUT_SAVE_LIMIT = 2 * 1024 * 1024
 
 
 def _is_import_only_cell(raw_cell: str) -> bool:
-    """Return True if every top-level statement in the cell is an import.
+    """Return True if the cell contains only imports and bare expression statements.
 
-    Import-only cells are skipped by the memory tracker because the import
-    machinery allocates large file-read buffers that are immediately mprotected,
-    causing EFAULT when the kernel writes file data into them via read().
-    Re-imports (packages already in sys.modules) are fast and allocation-free,
-    so only the first load of a fresh package hits this issue.
+    Such cells are skipped by the memory tracker for two reasons:
+    1. Import statements allocate large file-read buffers that are immediately
+       mprotected, causing EFAULT when the kernel's read() tries to fill them.
+    2. Bare expression statements (sys.path.append(...), print(...), display(...))
+       cannot produce new named bindings and therefore cannot create cross-cell
+       buffer dependencies worth tracking.
+
+    An ast.Expr node is any top-level expression used for its side effect —
+    function calls, attribute access, etc. Assignments, augmented assignments,
+    control flow, and function/class definitions are NOT covered, so cells that
+    actually compute data (A = np.random.rand(100)) are still tracked.
     """
     import ast as _ast
     try:
@@ -71,7 +77,7 @@ def _is_import_only_cell(raw_cell: str) -> bool:
     except SyntaxError:
         return False
     return bool(tree.body) and all(
-        isinstance(node, (_ast.Import, _ast.ImportFrom))
+        isinstance(node, (_ast.Import, _ast.ImportFrom, _ast.Expr))
         for node in tree.body
     )
 
@@ -564,6 +570,11 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                     register_memory_deps(_mem_exec_id)
                 except Exception:
                     pass
+            try:
+                from core.graph_adapter import update_transitive_dag_edges
+                update_transitive_dag_edges(_mem_exec_id)
+            except Exception:
+                pass
             # Stage 3:  Run post-execute hook
             if should_trace:
                 self.after_run_cell(raw_cell)
@@ -672,6 +683,12 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
             and getattr(self, "kernel", None) is None
         ):
             settings.interface = Interface.IPYTHON
+        if not getattr(self, '_rnb_flow_configured', False):
+            from ipyflow.config import ExecutionMode, ExecutionSchedule
+            settings.exec_mode = ExecutionMode.REACTIVE
+            settings.exec_schedule = ExecutionSchedule.HYBRID_DAG_LIVENESS_BASED
+            settings.pull_reactive_updates = True
+            self._rnb_flow_configured = True
         self.syntax_transforms_enabled = settings.syntax_transforms_enabled
         self.syntax_transforms_only = settings.syntax_transforms_only
         flow_.test_and_clear_waiter_usage_detected()

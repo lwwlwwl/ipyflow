@@ -232,7 +232,23 @@ class FrontendCheckerResult(NamedTuple):
                 for qual_sym in syms:
                     for sym in qual_sym.traverse_up_namespaces():
                         if sym.shallow_timestamp.cell_num > parent.cell_ctr:
-                            self.stale_parents[cell.cell_id].add(parent.cell_id)
+                            # Skip if a later-positioned parent already covers
+                            # this symbol (via fake_edge or same syms), meaning
+                            # a downstream cell has already handled the update.
+                            skip = False
+                            if slicing_ctx_var.get() == SlicingContext.STATIC:
+                                for other_pid, other_syms in cell.directional_parents.items():
+                                    other_parent = cells().from_id(other_pid)
+                                    if other_parent.position <= parent.position:
+                                        continue
+                                    if (
+                                        syms <= other_syms
+                                        or flow_.fake_edge_sym in other_syms
+                                    ):
+                                        skip = True
+                                        break
+                            if not skip:
+                                self.stale_parents[cell.cell_id].add(parent.cell_id)
                             break
 
     def _compute_stale_parent_makers(self) -> None:
