@@ -69,8 +69,12 @@ export function handleComputeExecSchedule(
   const flow_order = payload.flow_order;
   const exec_schedule = payload.exec_schedule;
   store.lastExecutionHighlights = payload.highlights as Highlights;
-  const lastExecutedCellId = payload.last_executed_cell_id as string;
-  store.executedReactiveReadyCells.add(lastExecutedCellId);
+  const lastExecutedCellId = (payload.last_executed_cell_id ?? null) as
+    | string
+    | null;
+  if (lastExecutedCellId !== null) {
+    store.executedReactiveReadyCells.add(lastExecutedCellId);
+  }
   if (hasDeferredCells()) {
     const cells = drainDeferredCells();
     if (store.isBatchReactive()) {
@@ -116,7 +120,7 @@ export function handleComputeExecSchedule(
       store.executeCells(reactiveCells);
     }
   } else if (store.settings.reactivity_mode === 'incremental') {
-    let lastExecutedCellIdSeen = false;
+    let lastExecutedCellIdSeen = lastExecutedCellId === null;
     for (const cell of notebook.widgets) {
       if (!lastExecutedCellIdSeen) {
         lastExecutedCellIdSeen = cell.model.id === lastExecutedCellId;

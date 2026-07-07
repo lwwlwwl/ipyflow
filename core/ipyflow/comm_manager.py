@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import ast
 import logging
+import os
 import textwrap
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Set
@@ -24,12 +25,29 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEP_LOG_PATH = "/tmp/rnb_deps.log"
+def _rnb_debug_graph_enabled() -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RNB_DEBUG_GRAPH", "").lower() in truthy
+        or os.environ.get("RNB_DEBUG_GRAPJ", "").lower() in truthy
+    )
+
+
+def _rnb_debug_graph_log(msg: str) -> None:
+    if not _rnb_debug_graph_enabled():
+        return
+    try:
+        from memtrace.profiler import _debug_graph_log
+
+        _debug_graph_log(msg)
+    except Exception:
+        pass
+
 
 def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
-    cells_to_rerun = checker_result.new_ready_cells | checker_result.forced_reactive_cells
-    if not cells_to_rerun:
+    if not _rnb_debug_graph_enabled():
         return
+    cells_to_rerun = checker_result.new_ready_cells | checker_result.forced_reactive_cells
     try:
         from ipyflow.data_model.cell import cells as _cells
 
@@ -42,10 +60,13 @@ def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
 
         lines = [
             f"\n{'='*60}",
-            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] REACTIVE RERUN triggered by {label(last_cell_id)}",
+            f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] REACTIVE SCHEDULE triggered by {label(last_cell_id)}",
             f"  Cells to rerun ({len(cells_to_rerun)}):",
             f"    new_ready:        {[label(c) for c in sorted(checker_result.new_ready_cells)]}",
             f"    forced_reactive:  {[label(c) for c in sorted(checker_result.forced_reactive_cells)]}",
+            f"    ready:            {[label(c) for c in sorted(checker_result.ready_cells)]}",
+            f"    waiting:          {[label(c) for c in sorted(checker_result.waiting_cells)]}",
+            f"    stale_parent_keys:{[label(c) for c in sorted(checker_result.stale_parents)]}",
         ]
         for cell_id in sorted(cells_to_rerun):
             cell = _cells().from_id_nullable(cell_id)
@@ -57,6 +78,25 @@ def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
             lines.append(f"  {label(cell_id)}")
             lines.append(f"    cell_parents:  {[label(p) for p in sorted(all_pars)]}")
             lines.append(f"    stale_parents: {[label(p) for p in sorted(stale_pars)]}")
+        if checker_result.stale_parents:
+            lines.append("  All stale parents:")
+            for cell_id in sorted(checker_result.stale_parents):
+                stale_pars = checker_result.stale_parents.get(cell_id, set())
+                lines.append(f"    {label(cell_id)} <- {[label(p) for p in sorted(stale_pars)]}")
+        if checker_result.stale_parents_by_executed_cell_by_child:
+            lines.append("  stale_parents_by_executed_cell_by_child:")
+            for child_id in sorted(checker_result.stale_parents_by_executed_cell_by_child):
+                by_exec = checker_result.stale_parents_by_executed_cell_by_child[child_id]
+                lines.append(f"    child {label(child_id)}")
+                for exec_id in sorted(by_exec):
+                    lines.append(f"      executed {label(exec_id)} -> {[label(p) for p in sorted(by_exec[exec_id])]}")
+        if checker_result.stale_parents_by_child_by_executed_cell:
+            lines.append("  stale_parents_by_child_by_executed_cell:")
+            for exec_id in sorted(checker_result.stale_parents_by_child_by_executed_cell):
+                by_child = checker_result.stale_parents_by_child_by_executed_cell[exec_id]
+                lines.append(f"    executed {label(exec_id)}")
+                for child_id in sorted(by_child):
+                    lines.append(f"      child {label(child_id)} -> {[label(p) for p in sorted(by_child[child_id])]}")
         lines.append("  Full cell_parents graph:")
         all_ids = set(checker_result.cell_parents) | {
             pid for pids in checker_result.cell_parents.values() for pid in pids
@@ -67,14 +107,9 @@ def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
             lines.append(f"    {label(cid)}{marker}")
             for pid in sorted(pids, key=lambda c: getattr(_cells().from_id_nullable(c), "position", 999)):
                 lines.append(f"      <- {label(pid)}")
-        with open(_DEP_LOG_PATH, "a") as f:
-            f.write("\n".join(lines) + "\n")
+        _rnb_debug_graph_log("\n".join(lines))
     except Exception as exc:
-        try:
-            with open(_DEP_LOG_PATH, "a") as f:
-                f.write(f"[rnb dep log error] {exc}\n")
-        except Exception:
-            pass
+        _rnb_debug_graph_log(f"[rnb dep log error] {exc}")
 
 
 class CommManager:
@@ -339,10 +374,21 @@ class CommManager:
         if cell_metadata_by_id is None:
             # bail if we don't have this
             return {"success": False, "error": "null value for cell metadata"}
-        is_cell_structure_change = self.flow._prev_cell_metadata_by_id is None or len(
-            self.flow._prev_cell_metadata_by_id
+        prev_cell_metadata_by_id = self.flow._prev_cell_metadata_by_id
+        is_cell_structure_change = prev_cell_metadata_by_id is None or len(
+            prev_cell_metadata_by_id
         ) != len(cell_metadata_by_id)
         self.flow._prev_cell_metadata_by_id = cell_metadata_by_id
+        if prev_cell_metadata_by_id is None:
+            prev_code_cell_ids = set()
+        else:
+            prev_code_cell_ids = {
+                cell_id
+                for cell_id, metadata in prev_cell_metadata_by_id.items()
+                if metadata["type"] == "code"
+                or metadata.get("override_live_refs")
+                or metadata.get("override_dead_refs")
+            }
         cell_metadata_by_id = {
             cell_id: metadata
             for cell_id, metadata in cell_metadata_by_id.items()
@@ -350,6 +396,7 @@ class CommManager:
             or metadata.get("override_live_refs")
             or metadata.get("override_dead_refs")
         }
+        deleted_code_cell_ids = prev_code_cell_ids - set(cell_metadata_by_id)
         order_index_by_id = {
             cell_id: metadata["index"]
             for cell_id, metadata in cell_metadata_by_id.items()
@@ -399,9 +446,34 @@ class CommManager:
                         break
         self.flow._create_untracked_cells_for_content(content_by_cell_id)
         if should_recompute_exec_schedule:
-            return self.handle_compute_exec_schedule(
+            response = self.handle_compute_exec_schedule(
                 request, notify_content_changed=False, allow_new_ready=False
             )
+            if deleted_code_cell_ids:
+                try:
+                    from kernels.rnb.graph_adapter import splice_deleted_cell
+                    affected = set()
+                    for z_id in deleted_code_cell_ids:
+                        affected.update(splice_deleted_cell(z_id))
+                    if response is not None and affected:
+                        # Use splice result only: ipyflow's forced_reactive_cells
+                        # is computed before splice rewires edges and includes
+                        # spurious ancestors that don't actually need reruns.
+                        response["last_executed_cell_id"] = None
+                        response["forced_reactive_cells"] = [
+                            cid for cid in sorted(order_index_by_id, key=order_index_by_id.get)
+                            if cid in affected
+                        ]
+                except Exception as _e:
+                    try:
+                        from memtrace.profiler import _debug_log
+                        import traceback as _tb
+
+                        _debug_log(f"[rnb-delete] ERROR in splice_deleted_cell: {_e!r}")
+                        _debug_log(_tb.format_exc().rstrip())
+                    except Exception:
+                        pass
+            return response
         else:
             return None
 

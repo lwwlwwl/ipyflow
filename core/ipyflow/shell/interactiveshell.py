@@ -57,19 +57,13 @@ _CAPTURE_OUTPUT_SAVE_LIMIT = 2 * 1024 * 1024
 
 
 def _is_import_only_cell(raw_cell: str) -> bool:
-    """Return True if the cell contains only imports and bare expression statements.
+    """Return True if the cell contains only import statements.
 
-    Such cells are skipped by the memory tracker for two reasons:
-    1. Import statements allocate large file-read buffers that are immediately
-       mprotected, causing EFAULT when the kernel's read() tries to fill them.
-    2. Bare expression statements (sys.path.append(...), print(...), display(...))
-       cannot produce new named bindings and therefore cannot create cross-cell
-       buffer dependencies worth tracking.
-
-    An ast.Expr node is any top-level expression used for its side effect —
-    function calls, attribute access, etc. Assignments, augmented assignments,
-    control flow, and function/class definitions are NOT covered, so cells that
-    actually compute data (A = np.random.rand(100)) are still tracked.
+    Import statements allocate large file-read buffers that are immediately
+    mprotected, causing EFAULT when the kernel's read() tries to fill them.
+    All other cells — including bare expression statements like b.append(6)
+    — must be tracked: method calls can mutate C-extension buffers in-place,
+    creating cross-cell memory dependencies even without rebinding a name.
     """
     import ast as _ast
     try:
@@ -77,7 +71,7 @@ def _is_import_only_cell(raw_cell: str) -> bool:
     except SyntaxError:
         return False
     return bool(tree.body) and all(
-        isinstance(node, (_ast.Import, _ast.ImportFrom, _ast.Expr))
+        isinstance(node, (_ast.Import, _ast.ImportFrom))
         for node in tree.body
     )
 

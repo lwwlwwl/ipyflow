@@ -2,6 +2,7 @@
 import ast
 import builtins
 import logging
+import os
 import sys
 import textwrap
 from typing import (
@@ -49,6 +50,58 @@ SliceRefType = Union["SliceableMixin", IdType, Timestamp]
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
+
+
+def _rnb_debug_graph_enabled() -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("RNB_DEBUG_GRAPH", "").lower() in truthy
+        or os.environ.get("RNB_DEBUG_GRAPJ", "").lower() in truthy
+    )
+
+
+def _rnb_sym_names(syms: Iterable["Symbol"]) -> List[str]:
+    names = []
+    for sym in syms:
+        name = getattr(sym, "readable_name", None) or getattr(sym, "name", None) or str(sym)
+        names.append(str(name))
+    return sorted(names)
+
+
+def _rnb_ref_label(ref: "SliceableMixin") -> str:
+    raw_id = str(getattr(ref, "id", "?"))
+    text = ""
+    try:
+        text = getattr(ref, "executed_content", None) or getattr(ref, "current_content", None) or getattr(ref, "text", "") or ""
+    except Exception:
+        text = ""
+    first_line = text.strip().splitlines()[0][:80] if text.strip() else ""
+    pos = getattr(ref, "position", None)
+    ctr = getattr(ref, "cell_ctr", None)
+    ts = getattr(ref, "timestamp", None)
+    return (
+        f"{ref.__class__.__name__}(id={raw_id[-6:]}, pos={pos}, "
+        f"ctr={ctr}, ts={ts}, code={first_line!r})"
+    )
+
+
+def _rnb_edge_debug(action: str, child: "SliceableMixin", parent: "SliceableMixin", syms: Set["Symbol"]) -> None:
+    if not syms or not _rnb_debug_graph_enabled():
+        return
+    try:
+        from memtrace.profiler import _debug_graph_log
+
+        _debug_graph_log(
+            "  [ipyflow-edge] {action} ctx={ctx} child={child} parent={parent} syms={syms}".format(
+                action=action,
+                ctx=slicing_ctx_var.get().name,
+                child=_rnb_ref_label(child),
+                parent=_rnb_ref_label(parent),
+                syms=_rnb_sym_names(syms),
+            )
+        )
+    except Exception:
+        pass
 
 
 class Slice:
@@ -304,6 +357,7 @@ class SliceableMixin(Protocol):
         parent = self._from_ref(parent_ref)
         pid = parent.id
         if pid in self.raw_children:
+            _rnb_edge_debug("skip-cycle-add", self, parent, syms)
             return
         if pid == self.id:
             # in this case, inherit the previous parents, if any
@@ -311,10 +365,15 @@ class SliceableMixin(Protocol):
                 for prev_pid, prev_syms in self.prev.raw_parents.items():
                     common = syms & prev_syms
                     if common:
+                        prev_parent = self._from_ref(prev_pid)
+                        new_syms = common - self.raw_parents.get(prev_pid, set())
                         self.raw_parents.setdefault(prev_pid, set()).update(common)
+                        _rnb_edge_debug("inherit-self-add", self, prev_parent, new_syms)
             return
+        new_syms = syms - self.raw_parents.get(pid, set())
         self.raw_parents.setdefault(pid, set()).update(syms)
         parent.raw_children.setdefault(self.id, set()).update(syms)
+        _rnb_edge_debug("add", self, parent, new_syms)
 
     def add_parent_edge(self, parent_ref: SliceRefType, sym: "Symbol") -> None:
         self.add_parent_edges(parent_ref, {sym})
@@ -326,6 +385,7 @@ class SliceableMixin(Protocol):
             return
         parent = self._from_ref(parent_ref)
         pid = parent.id
+        removed_syms = self.raw_parents.get(pid, set()) & syms
         for edges, eid in ((self.raw_parents, pid), (parent.raw_children, self.id)):
             sym_edges = edges.get(eid, set())
             if not sym_edges:
@@ -333,6 +393,7 @@ class SliceableMixin(Protocol):
             sym_edges.difference_update(syms)
             if not sym_edges:
                 del edges[eid]
+        _rnb_edge_debug("remove", self, parent, removed_syms)
 
     def remove_parent_edge(self, parent_ref: SliceRefType, sym: "Symbol") -> None:
         self.remove_parent_edges(parent_ref, {sym})
@@ -344,8 +405,11 @@ class SliceableMixin(Protocol):
         new_parent = self._from_ref(new_parent_ref)
         syms = self.raw_parents.pop(prev_parent.id)
         prev_parent.raw_children.pop(self.id)
+        new_syms = syms - self.raw_parents.get(new_parent.id, set())
         self.raw_parents.setdefault(new_parent.id, set()).update(syms)
         new_parent.raw_children.setdefault(self.id, set()).update(syms)
+        _rnb_edge_debug("replace-parent-remove", self, prev_parent, syms)
+        _rnb_edge_debug("replace-parent-add", self, new_parent, new_syms)
 
     def replace_child_edges(
         self, prev_child_ref: SliceRefType, new_child_ref: SliceRefType
@@ -354,8 +418,11 @@ class SliceableMixin(Protocol):
         new_child = self._from_ref(new_child_ref)
         syms = self.raw_children.pop(prev_child.id)
         prev_child.raw_parents.pop(self.id)
+        new_syms = syms - self.raw_children.get(new_child.id, set())
         self.raw_children.setdefault(new_child.id, set()).update(syms)
         new_child.raw_parents.setdefault(self.id, set()).update(syms)
+        _rnb_edge_debug("replace-child-remove", prev_child, self, syms)
+        _rnb_edge_debug("replace-child-add", new_child, self, new_syms)
 
     @property
     def raw_parents(self) -> Dict[IdType, Set["Symbol"]]:
