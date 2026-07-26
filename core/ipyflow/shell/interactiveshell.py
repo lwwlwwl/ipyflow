@@ -76,6 +76,24 @@ def _is_import_only_cell(raw_cell: str) -> bool:
     )
 
 
+def _is_shell_command_cell(raw_cell: str, transformed_cell: str) -> bool:
+    """
+        Return True if the cell shells out to a subprocess.
+    """
+    if (
+        "get_ipython().system(" in transformed_cell
+        or "get_ipython().getoutput(" in transformed_cell
+    ):
+        return True
+    if raw_cell.lstrip().startswith(("%%bash", "%%sh", "%%script")):
+        return True
+    for line in raw_cell.splitlines():
+        stripped = line.strip()
+        if stripped and stripped.startswith("!"):  # transform_cell fell back to raw
+            return True
+    return False
+
+
 class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
     prev_shell_class: Optional[Type[InteractiveShell]] = None
     replacement_class: Optional[Type[InteractiveShell]] = None
@@ -530,6 +548,18 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                     transformed_cell = raw_cell
                 if has_transformed_cell:
                     kwargs["transformed_cell"] = transformed_cell
+                if _should_track and _is_shell_command_cell(raw_cell, transformed_cell):
+                    _should_track = False
+                # An untracked cell (import-only or shell-out) runs uninstrumented
+                # syscalls that EFAULT on PROT_NONE pages left protected by earlier
+                # tracked cells; drop all protection first. Next tracked cell
+                # re-protects. See memtrace.profiler.clear_protections.
+                if not _should_track:
+                    try:
+                        from memtrace.profiler import clear_protections
+                        clear_protections()
+                    except Exception:
+                        pass
                 # discard any previous transformations that were done
                 cell = Cell.current_cell()
                 _track_ctx = suppress()
@@ -539,6 +569,9 @@ class IPyflowInteractiveShell(singletons.IPyflowShell, InteractiveShell):
                         _track_ctx = track_memory(_mem_exec_id, raw_cell)
                     except Exception:
                         pass
+                else:
+                    from memtrace.profiler import _debug_log
+                    _debug_log(f">>>>>>>>> NOT TRACKING EXEC {_mem_exec_id}")
                 with _track_ctx:
                     ret = await super().run_cell_async(
                         cell.raw_cell if has_transformed_cell else transformed_cell,
