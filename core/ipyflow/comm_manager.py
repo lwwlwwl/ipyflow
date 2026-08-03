@@ -22,30 +22,13 @@ from ipyflow.types import IdType
 if TYPE_CHECKING:
     from ipyflow.flow import NotebookFlow
 
+from memtrace.log import debug_graph_log, rnb_debug_graph_enabled
 
 logger = logging.getLogger(__name__)
 
-def _rnb_debug_graph_enabled() -> bool:
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("RNB_DEBUG_GRAPH", "").lower() in truthy
-        or os.environ.get("RNB_DEBUG_GRAPJ", "").lower() in truthy
-    )
-
-
-def _rnb_debug_graph_log(msg: str) -> None:
-    if not _rnb_debug_graph_enabled():
-        return
-    try:
-        from memtrace.profiler import _debug_graph_log
-
-        _debug_graph_log(msg)
-    except Exception:
-        pass
-
 
 def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
-    if not _rnb_debug_graph_enabled():
+    if not rnb_debug_graph_enabled():
         return
     cells_to_rerun = checker_result.new_ready_cells | checker_result.forced_reactive_cells
     try:
@@ -107,9 +90,9 @@ def _log_reactive_deps(checker_result: Any, last_cell_id: Any) -> None:
             lines.append(f"    {label(cid)}{marker}")
             for pid in sorted(pids, key=lambda c: getattr(_cells().from_id_nullable(c), "position", 999)):
                 lines.append(f"      <- {label(pid)}")
-        _rnb_debug_graph_log("\n".join(lines))
+        debug_graph_log("\n".join(lines))
     except Exception as exc:
-        _rnb_debug_graph_log(f"[rnb dep log error] {exc}")
+        debug_graph_log(f"[rnb dep log error] {exc}")
 
 
 class CommManager:
