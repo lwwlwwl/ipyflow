@@ -706,7 +706,9 @@ class Symbol:
                     logger.info("create fresh copy of namespace %s", old_ns)
                     new_ns = old_ns.fresh_copy(obj)
                     old_ns.transfer_symbols_to(new_ns)
-                else:
+                elif old_ns.parent_scope is not new_ns:
+                    # reactive_nb patch: skip when new_ns would become its own parent
+                    # (X.loc[X.index[...], c] = v pairs X.loc with X)
                     new_ns.scope_name = old_ns.scope_name
                     new_ns.parent_scope = old_ns.parent_scope
             self._handle_aliases()
