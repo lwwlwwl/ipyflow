@@ -3,7 +3,7 @@ import ast
 import builtins
 import logging
 import sys
-from types import FrameType
+from types import FrameType, ModuleType
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Type, Union, cast
 
 import pyccolo as pyc
@@ -514,6 +514,28 @@ class Statement(SliceableMixin):
                     None if iter_symbol is None else iter_symbol.namespaced()
                 ),
             )
+            self._maybe_mutate_module_of_target(target)
+
+    @staticmethod
+    def _maybe_mutate_module_of_target(target: ast.AST) -> None:
+        """Mark a module symbol changed when an assignment writes into state reached
+        from it (`plt.rcParams[k] = v`, `pd.options.display.width = v`), as the default
+        library-call rule does for `plt.rc(...)`; later cells read such module-level
+        configuration only through library calls on the module."""
+        root = target
+        while isinstance(root, (ast.Attribute, ast.Subscript)):
+            root = root.value
+        if root is target or not isinstance(root, ast.Name):
+            return
+        sym = tracer().cur_frame_original_scope.lookup_symbol_by_name(root.id)
+        if sym is None or not isinstance(sym.obj, ModuleType):
+            return
+        sym.update_deps(
+            set(),
+            overwrite=False,
+            mutated=True,
+            propagate_to_namespace_descendents=True,
+        )
 
     def _handle_store(self, node: Union[ast.Assign, ast.For, ast.AsyncFor]) -> None:
         if isinstance(node, ast.Assign):
