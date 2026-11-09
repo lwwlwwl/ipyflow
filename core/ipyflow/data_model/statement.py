@@ -288,6 +288,7 @@ class Statement(SliceableMixin):
                 # we need to keep the previous call scope's symtab since it came from the function's containing scope
                 new_call_scope.symtab = prev_call_scope.symtab
             func_sym.call_scope = new_call_scope
+            flow().superseded_call_scopes.append(prev_call_scope)
             func_sym.create_symbols_for_call_args(call_frame)
         return func_sym.call_scope
 

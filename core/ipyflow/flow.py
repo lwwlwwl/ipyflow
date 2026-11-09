@@ -197,6 +197,8 @@ class NotebookFlow(singletons.NotebookFlow):
         self.updated_symbols: Set[Symbol] = set()
         self.active_watchpoints: List[Tuple[Tuple[Watchpoint, ...], Symbol]] = []
         self.statement_to_func_sym: Dict[int, Symbol] = {}
+        # Call scopes a later call of the same function replaced; gc() collects them.
+        self.superseded_call_scopes: List[Scope] = []
         self.active_cell_id: Optional[IdType] = None
         self.waiter_usage_detected = False
         self.out_of_order_usage_detected_counter: Optional[int] = None
@@ -605,8 +607,93 @@ class NotebookFlow(singletons.NotebookFlow):
         self.out_of_order_usage_detected_counter = None
         return ret
 
+    def _mark_with_spliced_edges(
+        self, to_mark: List[Symbol], follow_namespaces: bool
+    ) -> Set[Symbol]:
+        """Marks the given symbols garbage, linking each one's parents to its children first
+        so dependency paths through it survive. With follow_namespaces, also marks the
+        namespace of every object no other live symbol holds (not modules or classes) and
+        continues with that namespace's symbols. Returns every symbol marked."""
+        marked: Set[Symbol] = set()
+        while to_mark:
+            sym = to_mark.pop()
+            if sym in marked:
+                continue
+            marked.add(sym)
+            for parent in sym.parents:
+                for child, timestamps in sym.children.items():
+                    if child is not parent and child not in marked:
+                        parent.children.setdefault(child, []).extend(timestamps)
+                        child.parents.setdefault(parent, []).extend(timestamps)
+            # set directly: Symbol.mark_garbage would also mark module and class namespaces
+            sym._tombstone = True
+            if not follow_namespaces:
+                continue
+            obj_id = sym.obj_id
+            if any(not other.is_garbage for other in self.aliases.get(obj_id, ())):
+                continue
+            ns = self.namespaces.get(obj_id)
+            if ns is None or ns.is_garbage or ns.is_module or isinstance(ns.obj, type):
+                continue
+            ns._tombstone = True
+            to_mark.extend(ns.all_symbols_this_indentation(exclude_class=True))
+        return marked
+
+    def _mark_superseded_call_scopes_garbage(self) -> Set[Symbol]:
+        """Marks the symbols of finished function calls as garbage, so the objects their
+        local variables held can be freed. A replaced call scope is kept while it encloses
+        the current call scope of any function (a closure can still read it)."""
+        if not self.superseded_call_scopes:
+            return set()
+        enclosing: Set[int] = set()
+        for sym in self.all_symbols():
+            scope = sym.call_scope
+            while scope is not None and id(scope) not in enclosing:
+                enclosing.add(id(scope))
+                scope = scope.parent_scope
+        kept: List[Scope] = []
+        to_mark: List[Symbol] = []
+        for scope in self.superseded_call_scopes:
+            if id(scope) in enclosing:
+                kept.append(scope)
+            else:
+                to_mark.extend(scope.all_symbols_this_indentation())
+        self.superseded_call_scopes = kept
+        return self._mark_with_spliced_edges(to_mark, follow_namespaces=True)
+
+    def _namespaces_only_ipyflow_holds(self) -> List[Namespace]:
+        """Registered namespaces whose object is referenced only by the namespace itself and
+        by symbols in `aliases`, i.e. no longer reachable from user code. Objects named by a
+        global symbol are skipped. Relies on CPython reference counts; where a count is lower
+        than expected, nothing is returned."""
+        found = []
+        for obj_id, ns in list(self.namespaces.items()):
+            obj = ns.obj
+            if obj is None or ns.is_garbage or ns.is_module or isinstance(obj, type):
+                continue
+            holders = [sym for sym in self.aliases.get(obj_id, ()) if sym.obj is obj]
+            if any(sym.containing_scope is self.global_scope for sym in holders):
+                continue
+            # references: ns.obj, each holder's obj, the local `obj`, getrefcount's argument
+            if sys.getrefcount(obj) == len(holders) + 3:
+                found.append(ns)
+        return found
+
+    def _collect_namespaces(self) -> None:
+        for ns in self.namespaces.values():
+            # e.g. the namespace of a loop's enumerate/zip object once its symbols are gone
+            if ns.is_anonymous and ns.size == 0:
+                ns._tombstone = True
+        garbage_namespaces = [ns for ns in self.namespaces.values() if ns.is_garbage]
+        for ns in garbage_namespaces:
+            if ns.size == 0:
+                ns.collect_self_garbage()
+            else:
+                ns.unmark_garbage()
+
     def gc(self):
         # Need to do the garbage marking and the collection separately
+        marked_call_symbols = self._mark_superseded_call_scopes_garbage()
         prev_cell = cells().at_counter(self.cell_counter()).prev_cell
         prev_cell_ctr = -1 if prev_cell is None else prev_cell.cell_ctr
         if prev_cell_ctr > 0:
@@ -615,15 +702,24 @@ class NotebookFlow(singletons.NotebookFlow):
                     continue
                 if sym.is_anonymous or sym.is_new_garbage():
                     sym.mark_garbage()
-        garbage_syms = [sym for sym in self.all_symbols() if sym.is_garbage]
+        garbage_syms = {sym for sym in self.all_symbols() if sym.is_garbage}
+        garbage_syms |= marked_call_symbols
         for sym in garbage_syms:
             sym.collect_self_garbage()
-        garbage_namespaces = [ns for ns in self.namespaces.values() if ns.is_garbage]
-        for ns in garbage_namespaces:
-            if ns.size == 0:
-                ns.collect_self_garbage()
-            else:
-                ns.unmark_garbage()
+        self._collect_namespaces()
+        # each round frees objects that only the previous round's namespaces held
+        for _ in range(10):
+            unreachable = self._namespaces_only_ipyflow_holds()
+            if not unreachable:
+                break
+            to_mark: List[Symbol] = []
+            for ns in unreachable:
+                ns._tombstone = True
+                to_mark.extend(ns.all_symbols_this_indentation(exclude_class=True))
+                to_mark.extend(self.aliases.get(ns.obj_id, ()))
+            for sym in self._mark_with_spliced_edges(to_mark, follow_namespaces=False):
+                sym.collect_self_garbage()
+            self._collect_namespaces()
 
     def retrieve_namespace_attr_or_sub(
         self, obj: Any, attr_or_sub: SupportedIndexType, is_subscript: bool

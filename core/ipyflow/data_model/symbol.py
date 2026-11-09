@@ -763,6 +763,8 @@ class Symbol:
             #  symbol for a given statement. We need a more precise way to determine
             #  the symbol being called than by looking at the stmt in question.
             flow().statement_to_func_sym[id(stmt_node)] = self
+            if self.call_scope is not None:
+                flow().superseded_call_scopes.append(self.call_scope)
             self.call_scope = self.containing_scope.make_child_scope(self.name)
             self.func_def_stmt = stmt_node
         return stmt_node

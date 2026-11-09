@@ -173,6 +173,11 @@ class Namespace(Scope):
         assert self.is_garbage
         assert len(list(self.all_symbols_this_indentation(exclude_class=True))) == 0
         flow().namespaces.pop(self.obj_id, None)
+        # Collected symbols keep this namespace as containing_scope (for readable_name),
+        # which needs only scope_name and parent_scope: drop the object so it can be
+        # freed, and the id so a new object at the same address is not taken for it.
+        self.obj = None
+        self.cached_obj_id = -1
 
     @property
     def is_subscript(self) -> bool:
